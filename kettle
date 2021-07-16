@@ -1,0 +1,116 @@
+#!/usr/bin/env python
+import argparse
+import select
+import time
+from pprint import pprint
+
+import paho.mqtt.client as mqtt
+from app.Kettle import Kettle
+from app.Socket import KettleSocket
+from const.kettle import MQTT_BASE, MQTT_CMD_TOPIC, MSG_KEEP_CONNECT_FREQ_SECS
+
+
+def cb_mqtt_on_connect(client, kettle, flags, rec_code):
+    """ The callback for when the client receives a CONNACK response from the server. """
+    print("Connected to MQTT broker with result code " + str(rec_code))
+
+    # Subscribing in on_connect() means that if we lose the connection and
+    # reconnect then subscriptions will be renewed.
+    client.subscribe(MQTT_CMD_TOPIC + "/#")  # subscribe to all topics
+
+
+def cb_mqtt_on_message(mqttc, kettle, msg):
+    """ The callback for when a PUBLISH message is received from the server. """
+    print("MQTT MSG: " + msg.topic + " : " + str(msg.payload))
+    kettle.wake()  # wake up kettle when receiving a command
+
+    if msg.topic == MQTT_CMD_TOPIC + "/power":
+        if msg.payload == b"ON":
+            kettle.turn_on()
+        elif msg.payload == b"OFF":
+            kettle.turn_off()
+        else:
+            print("MQTT MSG: msg not recognised:", msg)
+        mqttc.publish("stat/" + MQTT_BASE + "/power", kettle.stat["power"])
+
+    elif msg.topic == MQTT_CMD_TOPIC + "/keep_warm_onoff":
+        if msg.payload == b"True":
+            kettle.stat["keep_warm_onoff"] = True
+        elif msg.payload == b"False":
+            kettle.stat["keep_warm_onoff"] = False
+        else:
+            print("MQTT MSG: msg not recognised:", msg)
+        mqttc.publish(
+            "stat/" + MQTT_BASE + "/keep_warm_onoff", kettle.stat["keep_warm_onoff"]
+        )
+
+    elif msg.topic == MQTT_CMD_TOPIC + "/set_target_temp":
+        kettle.stat["set_target_temp"] = int(msg.payload)
+        mqttc.publish(
+            "stat/" + MQTT_BASE + "/set_target_temp", kettle.stat["set_target_temp"]
+        )
+
+
+def handle():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("host", nargs="?", help="kettle host or IP")
+    parser.add_argument('command', nargs="?", help="oneOf('wake', 'on', 'off')")
+    parser.add_argument("imei", nargs="?", help="kettle IMEI (e.g. GD0-12300-35aa)")
+    parser.add_argument(
+        "--port", help="kettle port (default 6002)", default=6002, type=int
+    )
+
+
+    kettle_socket = KettleSocket()
+    kettle = Kettle(kettle_socket)
+    kettle_info = kettle_socket.kettle_probe()
+
+    if kettle_info is not None:
+        kettle.payload.update(kettle_info)
+
+    mqttc = mqtt.Client()
+    mqttc.on_connect = cb_mqtt_on_connect
+    mqttc.on_message = cb_mqtt_on_message
+    mqttc.user_data_set(kettle)  # passes to each callback $kettle as $userdata
+    mqttc.will_set("stat/" + MQTT_BASE + "/status", "Disconnected", retain=True)
+    mqttc.connect(kettle_info['kettleIP'], 6002)
+    mqttc.loop_start()
+
+    timestamp = time.time()
+
+    i = 0
+    while True:
+        if not kettle_socket.connected:
+            kettle_socket.connect((kettle_info['kettleIP'], 6002))
+            print("Connected succesfully to socket on host", 6002)
+
+        inout = [kettle_socket.sock]
+        infds, outfds, errfds = select.select(inout, inout, [], 120)
+
+        if len(infds) != 0:
+            k_msg = kettle_socket.receive()
+            kettle.update_status(k_msg)
+
+        if len(outfds) != 0:
+            # print("we could be writing here")
+            pass
+        if len(errfds) != 0:
+            # print("we could be handling socket errors here")
+            pass
+
+        if time.time() - timestamp > MSG_KEEP_CONNECT_FREQ_SECS:
+            kettle_socket.keep_connect()
+            timestamp = time.time()
+
+        kettle.turn_on()
+        time.sleep(0.2)  # build-in a little sleep
+
+        if i > 5:
+            break
+        i += 1
+        # print("".join("%02x " % i for i in response))
+
+
+if __name__ == "__main__":
+    handle()

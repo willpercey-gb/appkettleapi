@@ -1,3 +1,2 @@
-dev_files*
-__py*
-*.code-workspace
+__py
+*.pyc

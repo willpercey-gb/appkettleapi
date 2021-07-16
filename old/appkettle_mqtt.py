@@ -34,6 +34,8 @@ import select
 import signal
 import json
 import argparse
+from pprint import pprint
+
 import paho.mqtt.client as mqtt
 from Crypto.Cipher import AES
 
@@ -130,14 +132,14 @@ class AppKettle:
         status_dict = {
             key: self.stat[key]
             for key in self.stat.keys()
-            & {
-                "power",
-                "status",
-                "temperature",
-                "target_temp",
-                "volume",
-                "keep_warm_secs",
-            }
+                       & {
+                           "power",
+                           "status",
+                           "temperature",
+                           "target_temp",
+                           "volume",
+                           "keep_warm_secs",
+                       }
         }
         return json.dumps(status_dict)
 
@@ -239,6 +241,7 @@ class KettleSocket:
             rcv_sock.close()
 
             msg = data.split("#")
+            # pprint(msg)
             msg_json = json.loads(msg[6])  # item 6 has a JSON message with some info
             msg_json.update({"imei": msg[0]})
             msg_json.update({"version": msg[3]})
@@ -296,16 +299,16 @@ class KettleSocket:
         bytes_recd = 0
         chunk = b""
         while (
-            bytes_recd < MSGLEN
-            and chunks[-2:] != [b"&", b"&"]
-            and self.connected is True
+                bytes_recd < MSGLEN
+                and chunks[-2:] != [b"&", b"&"]
+                and self.connected is True
         ):
             try:
                 chunk = self.sock.recv(1)
                 chunks.append(chunk)
                 bytes_recd = bytes_recd + len(chunk)
             except socket.error:
-                print("Socket connection broken?",)
+                print("Socket connection broken?", )
                 self.connected = False
                 return None
             if chunk == b"":
@@ -385,6 +388,8 @@ class KettleSocket:
             content = msg.encode()
             header = PLAIN_HEADER
         encoded_msg = header + bytes("%0.2X" % len(content), "utf-8") + content + b"&&"
+
+        pprint(encoded_msg)
         self.send(encoded_msg)
         if DEBUG_MSG:
             unpack_msg(to_json(msg))
@@ -452,6 +457,7 @@ def main_loop(host_port, imei, mqtt_broker):
     kettle_socket = KettleSocket(imei=imei)
     kettle = AppKettle(kettle_socket)
     kettle_info = kettle_socket.kettle_probe()
+
     if kettle_info is not None:
         kettle.stat.update(kettle_info)
 
